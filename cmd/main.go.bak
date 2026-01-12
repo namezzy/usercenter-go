@@ -163,7 +163,7 @@ Password: cfg.Password,
 DB:       cfg.DB,
 })
 
-
+cd /root/p_website && git commit -m "Update page title to 'Levi's Home Page'" 
 ctx := context.Background()
 maxRetries := 10
 var err error

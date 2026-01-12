@@ -14,7 +14,7 @@ services:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - "C:/Users/Hello World/Downloads/sql/create_table.sql:/docker-entrypoint-initdb.d/init.sql:ro"
+      - ../sql/create_table.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - user-center-network
     healthcheck:

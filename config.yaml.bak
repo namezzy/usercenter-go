@@ -9,7 +9,7 @@ database:
   port: 3306
   database: levi
   username: root
-  password: admin@123321
+  password: 123456
 
 # Redis配置
 redis:
