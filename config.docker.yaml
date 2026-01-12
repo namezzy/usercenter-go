@@ -8,9 +8,9 @@ server:
 database:
   host: mysql  # Docker Compose 中的服务名
   port: 3306
-  database: levi
+  database: yupi
   username: root
-  password: admin@123321
+  password: 123456
 
 # Redis配置 - Docker环境使用服务名作为host
 redis:
