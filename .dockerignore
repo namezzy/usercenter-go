@@ -1,0 +1,33 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+
+# 编译产物
+user-center
+*.exe
+
+# 依赖
+vendor/
+
+# 日志
+logs/
+*.log
+
+# 测试
+*.test
+
+# 临时文件
+tmp/
+temp/
+
+# 文档
+*.md
+!README.md
+
+# 本地配置
+config.local.yaml

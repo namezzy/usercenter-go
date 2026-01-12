@@ -1,0 +1,49 @@
+services:
+  # Go 应用
+  - type: web
+    name: user-center
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: DB_HOST
+        fromDatabase:
+          name: user-center-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: user-center-db
+          property: port
+      - key: DB_NAME
+        value: yupi
+      - key: DB_USER
+        fromDatabase:
+          name: user-center-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: user-center-db
+          property: password
+      - key: REDIS_HOST
+        fromService:
+          type: redis
+          name: user-center-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: redis
+          name: user-center-redis
+          property: port
+
+databases:
+  # MySQL 数据库
+  - name: user-center-db
+    databaseName: yupi
+    user: root
+    plan: free
+
+  # Redis 缓存
+  - name: user-center-redis
+    plan: free

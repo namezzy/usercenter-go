@@ -1,0 +1,227 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"log"
+	"regexp"
+	"time"
+	"user-center/internal/common"
+	"user-center/internal/model"
+	"user-center/internal/repository"
+	"user-center/pkg/utils"
+
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+)
+
+// UserService 用户服务
+type UserService struct {
+	userRepo     *repository.UserRepository
+	cacheService *CacheService
+}
+
+// NewUserService 创建用户服务
+func NewUserService(userRepo *repository.UserRepository, cacheService *CacheService) *UserService {
+	return &UserService{
+		userRepo:     userRepo,
+		cacheService: cacheService,
+	}
+}
+
+// UserRegister 用户注册
+func (s *UserService) UserRegister(userAccount, userPassword, checkPassword, planetCode string) (int64, error) {
+	// 1. 校验
+	if userAccount == "" || userPassword == "" || checkPassword == "" || planetCode == "" {
+		return -1, errors.New("参数为空")
+	}
+	if len(userAccount) < 4 {
+		return -1, errors.New("用户账号过短")
+	}
+	if len(userPassword) < 8 || len(checkPassword) < 8 {
+		return -1, errors.New("用户密码过短")
+	}
+	if len(planetCode) > 5 {
+		return -1, errors.New("星球编号过长")
+	}
+
+	// 账户不能包含特殊字符
+	validPattern := `[` + "`~!@#$%^&*()+=|{}':;',\\[\\].<>/?~！@#￥%……&*（）——+|{}【】'；：""'。，、？" + `]`
+	matched, _ := regexp.MatchString(validPattern, userAccount)
+	if matched {
+		return -1, errors.New("账号包含特殊字符")
+	}
+
+	// 密码和校验密码相同
+	if userPassword != checkPassword {
+		return -1, errors.New("两次密码不一致")
+	}
+
+	// 账户不能重复
+	existUser, _ := s.userRepo.FindByUserAccount(userAccount)
+	if existUser != nil {
+		return -1, errors.New("账号重复")
+	}
+
+	// 星球编号不能重复
+	existPlanet, _ := s.userRepo.FindByPlanetCode(planetCode)
+	if existPlanet != nil {
+		return -1, errors.New("编号重复")
+	}
+
+	// 2. 加密
+	encryptPassword := utils.EncryptPassword(userPassword)
+
+	// 3. 插入数据
+	user := &model.User{
+		UserAccount:  userAccount,
+		UserPassword: encryptPassword,
+		PlanetCode:   planetCode,
+	}
+	err := s.userRepo.Create(user)
+	if err != nil {
+		return -1, err
+	}
+
+	return user.ID, nil
+}
+
+// UserLogin 用户登录
+func (s *UserService) UserLogin(userAccount, userPassword string) (*model.SafetyUser, error) {
+	ctx := context.Background()
+	
+	// 检查登录失败次数（防暴力破解）
+	attempts, err := s.cacheService.GetLoginAttempts(ctx, userAccount)
+	if err == nil && attempts >= 5 {
+		return nil, errors.New("登录失败次数过多，请5分钟后再试")
+	}
+	
+	// 1. 校验
+	if userAccount == "" || userPassword == "" {
+		return nil, errors.New("参数为空")
+	}
+	if len(userAccount) < 4 {
+		return nil, errors.New("用户账号过短")
+	}
+	if len(userPassword) < 8 {
+		return nil, errors.New("用户密码过短")
+	}
+
+	// 账户不能包含特殊字符
+	validPattern := `[` + "`~!@#$%^&*()+=|{}':;',\\[\\].<>/?~！@#￥%……&*（）——+|{}【】'；：""'。，、？" + `]`
+	matched, _ := regexp.MatchString(validPattern, userAccount)
+	if matched {
+		return nil, errors.New("账号包含特殊字符")
+	}
+
+	// 2. 加密
+	encryptPassword := utils.EncryptPassword(userPassword)
+
+	// 查询用户是否存在
+	user, err := s.userRepo.FindByUserAccountAndPassword(userAccount, encryptPassword)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Println("user login failed, userAccount cannot match userPassword")
+			// 增加登录失败次数
+			s.cacheService.IncrLoginAttempts(ctx, userAccount, 5*time.Minute)
+			return nil, errors.New("账号或密码错误")
+		}
+		return nil, err
+	}
+
+	// 登录成功，清除失败次数
+	s.cacheService.DeleteLoginAttempts(ctx, userAccount)
+
+	// 3. 用户脱敏
+	safetyUser := s.GetSafetyUser(user)
+	
+	// 4. 缓存用户信息（30分钟）
+	s.cacheService.SetUser(ctx, user.ID, safetyUser, 30*time.Minute)
+	
+	return safetyUser, nil
+}
+
+// GetSafetyUser 用户脱敏
+func (s *UserService) GetSafetyUser(originUser *model.User) *model.SafetyUser {
+	if originUser == nil {
+		return nil
+	}
+	return &model.SafetyUser{
+		ID:          originUser.ID,
+		Username:    originUser.Username,
+		UserAccount: originUser.UserAccount,
+		AvatarUrl:   originUser.AvatarUrl,
+		Gender:      originUser.Gender,
+		Phone:       originUser.Phone,
+		Email:       originUser.Email,
+		PlanetCode:  originUser.PlanetCode,
+		UserRole:    originUser.UserRole,
+		UserStatus:  originUser.UserStatus,
+		CreateTime:  originUser.CreateTime,
+	}
+}
+
+// GetUserByID 根据ID获取用户
+func (s *UserService) GetUserByID(id int64) (*model.User, error) {
+	ctx := context.Background()
+	
+	// 先从缓存获取
+	cachedUser, err := s.cacheService.GetUser(ctx, id)
+	if err == nil && cachedUser != nil {
+		// 缓存命中，但需要返回完整用户信息，所以还是查数据库
+		// 这里可以优化为也缓存完整信息，但为了安全起见，只缓存脱敏信息
+	}
+	
+	return s.userRepo.FindByID(id)
+}
+
+// SearchUsers 搜索用户
+func (s *UserService) SearchUsers(username string) ([]model.SafetyUser, error) {
+	ctx := context.Background()
+	
+	// 尝试从缓存获取
+	cacheKey := "search:users:" + username
+	cachedUsers, err := s.cacheService.GetUserList(ctx, cacheKey)
+	if err == nil && cachedUsers != nil {
+		log.Println("Cache hit for user search:", username)
+		return cachedUsers, nil
+	}
+	
+	// 缓存未命中，从数据库查询
+	users, err := s.userRepo.SearchByUsername(username)
+	if err != nil {
+		return nil, err
+	}
+
+	safetyUsers := make([]model.SafetyUser, 0, len(users))
+	for _, user := range users {
+		safetyUser := s.GetSafetyUser(&user)
+		if safetyUser != nil {
+			safetyUsers = append(safetyUsers, *safetyUser)
+		}
+	}
+	
+	// 缓存搜索结果（5分钟）
+	s.cacheService.SetUserList(ctx, cacheKey, safetyUsers, 5*time.Minute)
+	
+	return safetyUsers, nil
+}
+
+// DeleteUser 删除用户
+func (s *UserService) DeleteUser(id int64) error {
+	ctx := context.Background()
+	
+	if id <= 0 {
+		return errors.New("用户ID无效")
+	}
+	
+	err := s.userRepo.DeleteByID(id)
+	if err != nil {
+		return err
+	}
+	
+	// 删除用户缓存
+	s.cacheService.DeleteUser(ctx, id)
+	
+	return nil
+}
